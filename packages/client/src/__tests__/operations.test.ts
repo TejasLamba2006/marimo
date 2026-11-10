@@ -62,8 +62,8 @@ describe("operations", () => {
     );
     expect(operations["notebook.delete"].responses[204]).toBeNull();
     expect(operations["notebook.save"].headers).toEqual({
-      "Idempotency-Key": true,
-      "If-Match": false,
+      "idempotency-key": true,
+      "if-match": false,
     });
     expect(operations["runtime.interrupt"].path).toBe(
       "/notebooks/{notebook_id}/runtime/runs/{run_id}",

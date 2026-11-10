@@ -12,7 +12,7 @@ from starlette.responses import Response
 from starlette.routing import Route
 
 from marimo import _loggers
-from marimo._core import operations, protocol
+from marimo._core import operations
 from marimo._core.calls import CALLS, dispatch
 from marimo._core.errors import HostError
 from marimo._core.operations import Reply
@@ -40,11 +40,11 @@ def _context(request: HTTPConnection) -> HostContext:
 
 def _response(status: int, body: msgspec.Struct | None) -> Response:
     media_type = (
-        "application/problem+json"
-        if isinstance(body, protocol.Problem)
+        None
+        if body is None
+        else "application/problem+json"
+        if status >= 400
         else "application/json"
-        if body is not None
-        else None
     )
     return Response(
         b"" if body is None else msgspec.json.encode(body),
@@ -53,20 +53,26 @@ def _response(status: int, body: msgspec.Struct | None) -> Response:
     )
 
 
-def problem(
-    status: int, kind: str | None = None, detail: str | None = None
-) -> Response:
-    if kind is None:
-        kind = {
-            400: "invalid-request",
-            404: "not-found",
-            405: "method-not-allowed",
-            409: "conflict",
-        }.get(status)
+def problem(kind: operations.PlainKind, detail: str | None = None) -> Response:
+    body = operations.problem(kind, detail)
+    return _response(body.status, body)
+
+
+_ROUTER_KINDS: dict[int, operations.PlainKind] = {
+    400: "invalid-request",
+    404: "not-found",
+    405: "method-not-allowed",
+    409: "conflict",
+}
+
+
+def status_problem(status: int, detail: str | None = None) -> Response:
+    """Describe a status that the router or a route raised."""
+    kind = _ROUTER_KINDS.get(status)
     if kind is None:
         LOGGER.error("The host API raised an unmapped status %s", status)
-        status, kind, detail = 500, "internal", "The host failed"
-    return _response(status, operations.problem(status, kind, detail))
+        return problem("internal", "The host failed")
+    return problem(kind, detail)
 
 
 async def _decode(request: Request, kind: type[_Body]) -> _Body:
@@ -100,9 +106,9 @@ def _mutation(
                     call=lambda: endpoint(request),
                 )
             except msgspec.DecodeError as e:
-                return problem(400, "invalid-request", str(e))
+                return problem("invalid-request", str(e))
             except HTTPException as e:
-                return problem(e.status_code, detail=e.detail)
+                return status_problem(e.status_code, e.detail)
             except HostError as e:
                 failure = operations.problem_for(e)
                 return _response(failure.status, failure)
@@ -129,7 +135,7 @@ def _endpoint(
         try:
             call = msgspec.json.decode(msgspec.json.encode(parts), type=kind)
         except msgspec.DecodeError as e:
-            return problem(400, "invalid-request", str(e))
+            return problem("invalid-request", str(e))
         context = _context(request)
         session = AppState(request).get_current_session()
         status, body = await dispatch(
@@ -189,9 +195,7 @@ def _editor_endpoint(
         if "edit" in scopes:
             return await serve(request)
         if scopes:
-            return problem(
-                403, "forbidden", "This editor cannot edit notebooks"
-            )
-        return problem(401, "unauthorized", "Sign in to the editor")
+            return problem("forbidden", "This editor cannot edit notebooks")
+        return problem("unauthorized", "Sign in to the editor")
 
     return handle
